@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<project>
+    <gatt in="ptu_gatt.xml" />
+    <hardware in="ptu_hardware.xml" />
+    <script in="ptu_ble113.bgs" />
+	<config in="ptu_config.xml" />
+    <device type="ble113" memory="128"/>
+    <image out="ptu_hex_ble113.hex" />
+</project>

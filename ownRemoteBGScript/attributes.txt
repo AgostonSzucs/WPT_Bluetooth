@@ -1,0 +1,8 @@
+c_device_name 3
+c_appearance 6
+c_manufacturer_name 10
+c_model_number 13
+c_gpio_levels 17
+pwd 21
+c_pru_static 25
+c_pru_dynamic 28

@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<configuration>
+
+    <!-- 1800: org.bluetooth.service.generic_access -->
+    <service uuid="1800" id="generic_access">
+        <description>Generic Access</description>
+
+        <!-- 2A00: org.bluetooth.characteristic.gap.device_name -->
+        <characteristic uuid="2A00" id="c_device_name">
+            <description>Device Name</description>
+            <properties read="true" const="true" />
+            <value>WPT PRU</value>
+        </characteristic>
+
+        <!-- 2A01: org.bluetooth.characteristic.gap.appearance -->
+        <characteristic uuid="2A01" id="c_appearance">
+            <description>Appearance</description>
+            <properties read="true" const="true" />
+            <value type="hex">0100</value>
+        </characteristic>
+        
+    </service>
+
+    <!-- 180A: org.bluetooth.service.device_information -->
+    <service uuid="180A" id="device_information">
+        <description>Device Information</description>
+    
+        <!-- 2A29: org.bluetooth.characteristic.manufacturer_name_string -->
+        <characteristic uuid="2A29" id="c_manufacturer_name">
+            <description>Manufacturer Name</description>
+            <properties read="true" const="true" />
+            <value>Bluegiga</value>
+        </characteristic>
+
+        <!-- 2A24: org.bluetooth.characteristic.model_number_string -->
+        <characteristic uuid="2A24" id="c_model_number">
+            <description>Model Number</description>
+            <properties read="true" const="true" />
+            <value>GPIO Remote Slave Device</value>
+        </characteristic>
+        
+    </service>
+
+    <!-- custom service for providing and controlling demo slave behavior -->
+	<service uuid="47f1de41-c535-414f-a747-1184246636c6" advertise="true">
+        <description>GPIO Remote Control Service</description>
+
+        <!-- custom characteristic for acknowledged status and control point -->
+        <characteristic uuid="f408b6c7-06c0-4b4a-8493-50bc261ea9e7" id="c_gpio_levels">
+            <description>GPIO Remote Control Characteristic</description>
+            <properties write="true" indicate="true"/>
+            <value length="1" />
+        </characteristic>
+		<characteristic uuid="23A5" id="pwd">
+		<properties write="true" indicate="true" read="false"/>
+		<value length="4" />
+		</characteristic>
+
+    </service>
+	
+	<service uuid="FFFE" id = "wpt_service" >
+		<description>Generic Access</description>
+		
+		<!-- custom characteristic for PRU static parameters -->
+		<characteristic uuid="6455e670-a146-11e2-9e96-0800200c9a6A" id = "c_pru_static">
+			<description> PRU static parameters </description>
+			<properties read = "true" const = "true" />
+			<value type = 'hex'>0000546722AF88EC8DC2123456789D5555145682</value>
+		</characteristic>
+		
+		<characteristic uuid="6455e670-a146-11e2-9e96-0800200c9a6B" id = "c_pru_dynamic">
+			<description> PRU dynamic parameters </description>
+			<properties read = "true" const = "true" />
+			<value type = 'hex'>1111546722AF88EC8DC2123456789D5555145682</value>
+		</characteristic>
+	</service>
+		
+	
+</configuration>

@@ -1,0 +1,61 @@
+# Bluetooth Door Opener Remote Controller v1.0
+# Code by Bluegiga and Matolcs
+
+const PIN_SELECT_MASK = $E0 # 0b11100000 = Px_4, Px_5, Px_6 are outputs
+const STANDBY_MASK = $40 #0b01000000, P0_6 (Standby LED) select
+const ACTIVATED_PIN_MASK = $60 #0b01100000, P0_6 & P0_5 (STDBY LED + ACTIVATED LED) select
+
+dim passwd(4) # password buffer
+dim hold_time # relay holding time in seconds
+
+event system_boot(major, minor, patch, build, ll_version, protocol_version, hw)
+    
+	# set desired Port 0 pins to output/low mode
+	call hardware_io_port_config_pull(1, $00, 1) #pull up to 1 all PORT_1 ports 
+    call hardware_io_port_config_direction(0, PIN_SELECT_MASK)
+	call hardware_io_port_config_direction(1, $FE)
+	
+	call hardware_io_port_irq_enable(1, $01)
+    call hardware_io_port_irq_direction(1, 0)
+    call hardware_io_port_write(0, STANDBY_MASK, $ff)
+	
+	passwd(0:4) = $FAEDFAED #password by default
+	
+    # set advertisement interval to 200-300ms
+    call gap_set_adv_parameters(320, 480, 7)
+	
+    # put module into discoverable/connectable mode
+    call gap_set_mode(gap_general_discoverable, gap_undirected_connectable)
+end
+
+# catch disconnection event
+event connection_disconnected(handle, result)
+    # put module back into discoverable/connectable mode
+	call gap_set_mode(gap_general_discoverable, gap_undirected_connectable)
+end
+
+# catch remote write of characteristic value
+event attributes_value(connection, reason, handle, offset, value_len, value_data)
+	if handle = pwd && value_data(0:4) = passwd(0:4) #password is EDFAEDFA in hex
+		#password accepted
+		call hardware_io_port_write(0, ACTIVATED_PIN_MASK, $ff) #blink LED-s
+		call hardware_set_soft_timer(32768*hold_time,2,1) #for the duration of hold time, the IO ports are set
+	else
+		call connection_disconnect(connection)
+		#not allowed access
+	end if
+end
+
+event hardware_io_port_status(timestamp, port, irq, state)
+	call hardware_io_port_config_direction(1, $20)
+	call hardware_io_port_write(1, $20, $00) # Deactivate LED
+	
+end
+
+
+#when output timer is finished
+event hardware_soft_timer(handle) 
+	if handle = 2
+		call hardware_io_port_write(1, PIN_SELECT_MASK, $00)
+	end if
+end

@@ -1,0 +1,607 @@
+#################################
+#	Wireless Power Transfer		#
+#		PTU project				#
+#	author:Szucs Mark Agoston	#
+#################################
+#	Start of PTU script			#	
+#################################
+
+
+#################################
+#	DECLARATION of PTU states	#
+#################################
+
+const PIN_SELECT_MASK = $83         # 0b00000011 
+const STATE_STANDBY = 0			
+const STATE_SCANNING = 1
+const STATE_CONNECTING = 2
+const STATE_FINDING_GPIO_SERVICE = 3
+const STATE_FINDING_GPIO_ATTRIBUTE = 4
+const STATE_CONTROL_READY = 5
+const STATE_FINDING_WPT_SERVICE = 6
+const STATE_FINDING_WPT_ATTRIBUTE = 7
+const STATE_READ_STAT = 8
+
+#################################################
+#	DECLARATION of strings used by simulation	#
+#################################################
+
+dim dyn_string(7)
+dim stat_string(6)
+
+#########################################
+#	DECLARATION of characteristic UUIDs	#
+#########################################
+
+dim gpio_service(16)					# GPIO_CONTROL
+dim gpio_pwd(2)
+dim gpio_levels(16)
+dim wpt_service_uuid(2)					# PRU control
+dim wpt_pru_dyn_uuid(16)
+dim wpt_pru_static_uuid(16)
+
+#################################################
+#	DECLARATION of Dynamic parameter buffers	#
+#################################################
+
+dim dyn_raw(20)
+dim dyn_voltage_rect(16)					
+dim dyn_current_rect(16)
+dim dyn_voltage_out(16)
+dim dyn_current_out(16)					
+dim dyn_temperature(8)
+dim dyn_voltage_rect_min(16)
+dim dyn_voltage_rect_set(16)
+dim dyn_voltage_rect_high(16)
+dim dyn_alert(8)
+
+#############################################
+#	DECLARATION of Static parameter buffers	#
+#############################################
+
+dim stat_prot_rev(8)					
+dim stat_category(8)
+dim stat_information(8)
+dim stat_hardware_rev(8)					
+dim stat_firmvare_rev(8)
+dim stat_power_rect_max(8)
+dim stat_voltage_rect_min(16)
+dim stat_voltage_rect_high(16)
+dim stat_valtage_rect_set(16)
+dim stat_delta_r1(16)
+
+#############################################
+#	DECLARATION of characteristic handels	#
+#############################################
+
+dim att_handlesearch_start          # GPIO remote GATT service definition range handle start
+dim att_handlesearch_end            # GPIO remote GATT service definition range handle end
+dim att_handle_gpio_control         # local var for discovering/storing remote handle GPIO_CONTROL
+dim att_handle_pwd					# local var for discovering/storing remote handle PWD
+dim att_handle_pru_static			# local var for discovering/storing remote handle Static PRU 
+dim att_handle_pru_dyn				# local var for discovering/storing remote handle Dynamic PRU 
+
+
+#########################################
+#	DECLARATION of auxilliary variables	#
+#########################################
+
+dim attached_pru
+dim gpio_password(4)						# Password container
+dim app_state                       # keep track of application state // current state 
+dim pending_connection_handle       # handle for pending connection attempt
+dim ad_field_length					# length of advertisement packet
+dim ad_field_type					
+dim i
+dim j
+dim k
+dim ret_result
+dim error_code(4)
+dim conn
+dim temp_ascii_array(40)		#Maximum length of ascii conversion
+dim in(10)
+dim in_len
+dim result_rx
+dim disp_cntr
+dim hex_cntr
+dim byte_cntr
+dim even_cntr
+dim display_position
+dim array_place
+dim pru_cntr
+dim two_byte_place
+dim break_event
+
+#############################
+#	Procedure declarations	#
+#############################
+
+procedure default_variable_declaration()
+	# initialize all status/tracking vars
+    app_state = STATE_STANDBY
+    
+	pending_connection_handle = $ff	#$ means this has hexa value
+    att_handlesearch_start = 0
+    att_handlesearch_end = 0
+    att_handle_gpio_control = 0
+	att_handle_pwd = 0	#handle for pwd characteristic
+	att_handle_pru_static = 0
+	
+	gpio_password(0:4)=$FAEDFAED #default password
+	
+	# NOTE: LITTLE-ENDIAN BYTE ORDER
+	wpt_service_uuid(0:2) = "\xFE\xFF"
+	wpt_pru_static_uuid(0:16) = "\x6A\x9a\x0c\x20\x00\x08\x96\x9e\xe2\x11\x46\xa1\x70\xe6\x55\x64"
+	wpt_pru_dyn_uuid(0:16) = "\x6B\x9a\x0c\x20\x00\x08\x96\x9e\xe2\x11\x46\xa1\x70\xe6\x55\x64"
+	
+	gpio_pwd(0:2) = "\xA5\x23"
+    gpio_service(0:16) = "\xc6\x36\x66\x24\x84\x11\x47\xa7\x4f\x41\x35\xc5\x41\xde\xf1\x47"
+	gpio_levels(0:16) = "\xe7\xa9\x1e\x26\xbc\x50\x93\x84\x4a\x4b\xc0\x06\xc7\xb6\x08\xf4"
+	
+	
+	dyn_string(0:7) = "DYNAMIC"
+	stat_string(0:6) = "STATIC"
+	
+	attached_pru = 0
+	
+end
+
+procedure write_to_display(pos,data_len, data())
+	call hardware_io_port_write(1,$2,$1)
+	#move cursor to position "pos"
+	call hardware_spi_transfer(0,1,pos)
+	
+	#call hardware_io_port_config_direction(1, $02)
+	#call hardware_io_port_write(1, $02, $00) # Activated P1_1 LED
+	#display to data mode
+	call hardware_io_port_write(1,$2,$3)
+	disp_cntr = 0
+	while disp_cntr < data_len	
+		call hardware_spi_transfer(0,1,data(disp_cntr:1))
+		disp_cntr = disp_cntr + 1
+	end while
+end
+
+procedure dyn_to_ascii (bit_sequence,array_length,hex_array())
+	byte_cntr = 0
+	hex_cntr = 0
+	even_cntr = 0
+	
+	if bit_sequence = 1 then
+		while hex_cntr < (array_length * 2)
+			if even_cntr = 0 then
+				temp_ascii_array(hex_cntr:1) = (hex_array(byte_cntr:1)/$10) + 48 + ((hex_array(byte_cntr:1)/$10)/10*7)
+				even_cntr = even_cntr + 1
+			else
+				temp_ascii_array(hex_cntr:1) = (hex_array(byte_cntr:1)&$f) + 48 + ((hex_array(byte_cntr:1)&$f )/10*7)
+				even_cntr = 0
+				byte_cntr = byte_cntr + 1
+			end if
+			hex_cntr = hex_cntr + 1
+		end while
+	else
+		byte_cntr = array_length - 1
+		while hex_cntr < (array_length * 2)
+			if even_cntr = 0 then
+				temp_ascii_array(hex_cntr:1) = (hex_array(byte_cntr:1)/$10) + 48 + ((hex_array(byte_cntr:1)/$10)/10*7)
+				even_cntr = even_cntr + 1
+			else
+				temp_ascii_array(hex_cntr:1) = (hex_array(byte_cntr:1)&$f) + 48 + ((hex_array(byte_cntr:1)&$f )/10*7)
+				even_cntr = 0
+				byte_cntr = byte_cntr - 1
+			end if
+			hex_cntr = hex_cntr + 1
+		end while
+	end if
+		
+end	
+
+procedure update_dynamic_buffer(number_of_pru,dyn_array())
+
+	array_place = number_of_pru - 1
+	
+	dyn_voltage_rect(array_place:2) = dyn_array(1:2)		
+	dyn_current_rect(array_place:2) = dyn_array(3:2)
+	dyn_voltage_out(array_place:2) = dyn_array(5:2)
+	dyn_current_out(array_place:2) = dyn_array(7:2)
+	dyn_temperature(array_place:1) = dyn_array(9:1)
+	dyn_voltage_rect_min(array_place:2) = dyn_array(10:2)
+	dyn_voltage_rect_set(array_place:2) = dyn_array(12:2)
+	dyn_voltage_rect_high(array_place:2) = dyn_array(14:2)
+	dyn_alert(array_place:1) = dyn_array(16:1)
+end
+
+procedure update_static_buffer(number_of_pru,dyn_array())
+
+	array_place = number_of_pru - 1
+	
+	stat_prot_rev(array_place:1) = dyn_array(1:1)		
+	stat_category(array_place:1) = dyn_array(3:1)
+	stat_information(array_place:1) = dyn_array(4:1)
+	stat_hardware_rev(array_place:1) = dyn_array(5:1)
+	stat_firmvare_rev(array_place:1) = dyn_array(6:1)
+	stat_power_rect_max(array_place:1) = dyn_array(7:1)
+	stat_voltage_rect_min(array_place:2) = dyn_array(8:2)
+	stat_voltage_rect_high(array_place:2) = dyn_array(10:2)
+	stat_valtage_rect_set(array_place:2) = dyn_array(12:2)
+	stat_delta_r1(array_place:2) = dyn_array(14:2)
+	
+end
+
+procedure send_dynamic_buffer()
+	
+	pru_cntr = 0
+	two_byte_place = 0
+	while pru_cntr < attached_pru
+		two_byte_place = pru_cntr * 2
+		
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 9, "\r\nUrect:")
+		call dyn_to_ascii(1,2,dyn_voltage_rect(two_byte_place:2))
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 4, temp_ascii_array(0:4))
+		
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 9, "\r\nIrect:")
+		call dyn_to_ascii(1,2,dyn_current_rect(two_byte_place:2))
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 4, temp_ascii_array(0:4))
+		
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 8, "\r\nUout:")
+		call dyn_to_ascii(1,2,dyn_voltage_out(two_byte_place:2))
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 4, temp_ascii_array(0:4))
+		
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 8, "\r\nIout:")
+		call dyn_to_ascii(1,2,dyn_current_out(two_byte_place:2))
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 4, temp_ascii_array(0:4))
+		
+		
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 8, "\r\nTemp:")
+		call dyn_to_ascii(1,1,dyn_temperature(pru_cntr:1))
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 2, temp_ascii_array(0:2))
+		
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 12, "\r\nUrectmin:")
+		call dyn_to_ascii(1,2,dyn_voltage_rect_min(two_byte_place:2))
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 4, temp_ascii_array(0:4))
+		
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 12, "\r\nUrectset:")
+		call dyn_to_ascii(1,2,dyn_voltage_rect_set(two_byte_place:2))
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 4, temp_ascii_array(0:4))	
+		
+		
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 13, "\r\nUrecthigh:")
+		call dyn_to_ascii(1,2,dyn_voltage_rect_high(two_byte_place:2))
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 4, temp_ascii_array(0:4))
+		
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 9, "\r\nAlert:")
+		call dyn_to_ascii(1,1,dyn_alert(pru_cntr:1))
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 2, temp_ascii_array(0:2))
+		
+		pru_cntr = pru_cntr + 1
+	
+	end while
+
+end
+
+event system_boot(major, minor, patch, build, ll_version, protocol_version, hw)
+   
+	call default_variable_declaration()
+	display_position = "\xC0"
+		
+    # enable rising-edge interrupts on Port0 pins
+    call hardware_io_port_config_pull(0, $00, 0) #pull down to 0 all PORT_0 ports 
+    call hardware_io_port_irq_enable(0, PIN_SELECT_MASK)
+	call hardware_io_port_irq_enable(0, PIN_SELECT_MASK)
+    call hardware_io_port_irq_direction(0, 0)
+	#call hardware_io_port_config_irq(0, $03, 0)
+	
+    # set scan parameters to 125ms/125ms interval/window, and use passive scanning
+    call gap_set_scan_parameters(200, 200, 0)
+
+    # start discovery // Scanning state
+    app_state = STATE_SCANNING
+	#call hardware_io_port_config_direction(1, $02)
+	#call hardware_io_port_write(1, $02, $02) # Activated P1_1 LED
+	
+	#display to command mode
+	call hardware_io_port_config_direction(1,$7)
+	call write_to_display("\x01",15,"Scanning start!")
+	
+	# enable RX watermark on UART1 (no TX watermark)
+	# This option disable to buffer for the TX (no future data will be written in the buffer)
+    call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+    call system_endpoint_tx(system_endpoint_uart1, 9, "\r\nREADY\r\n")
+	
+
+    call gap_discover(gap_discover_generic)
+end
+
+# catch scan response event while scanning
+event gap_scan_response(rssi, packet_type, sender, address_type, bond, data_len, data_data)
+    # only check for main ad packets (packet_type = 0)
+    if packet_type = 0 then
+        # advertisement packet found during scan, so check for demo status/control service
+        # searched UUID is defined in the slave GATT as 47f1de41-c535-414f-a747-1184246636c6
+        i = 0
+        while i < data_len
+            ad_field_length = data_data(i:1)
+            ad_field_type = data_data(i + 1:1)
+            if ad_field_type = $06 || ad_field_type = $07 then
+                # partial ($06) or complete ($07) list of 128-bit UUIDs
+                j = 0
+                while j < ad_field_length - 1
+                    if memcmp(data_data(i + j + 2), gpio_service(0), 16) && app_state = STATE_SCANNING then
+                        # found GPIO remote service, so connect (stops scanning automatically)
+						#call hardware_set_soft_timer(32768*2, 0, 1)
+                        call gap_connect_direct(sender(0:6), address_type, $20, $30, 100, 0)(ret_result, k)
+						call write_to_display("\x01",17,"Connection found!")
+						#call system_address_get()(mac_addr(0:6))
+						call dyn_to_ascii(0,6,sender(0:6))
+						call write_to_display("\xC0",12,temp_ascii_array(0:11))
+						call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+						call system_endpoint_tx(system_endpoint_uart1, 12, temp_ascii_array(0:11))					
+						call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+						call system_endpoint_tx(system_endpoint_uart1, 2, "\r\n")
+	
+	
+						pending_connection_handle = k
+                        # update application state
+                        app_state = STATE_CONNECTING
+                        # start 4-second one-shot timer to detect connection timeout
+                        call hardware_set_soft_timer(32768*4, 0, 1)
+                        # exit gap_scan_response event handler immediately
+                        return
+                    end if
+                    j = j + 16
+                end while
+            end if
+            i = i + ad_field_length + 1
+        end while
+    end if
+end
+
+# catch connection update event
+event connection_status(connection, flags, address, address_type, conn_interval, timeout, latency, bonding)
+    # check for "new connection established" update
+	conn = connection	#conn =  pointer to connection
+    if (flags & $05) = $05 then
+		# make sure this is the first "connection_update" event
+        # (may be triggered again for other updates, encryption, etc.)
+        if app_state = STATE_CONNECTING then
+            # cancel connection timeout timer
+            call hardware_set_soft_timer(0, 0, 1)
+            pending_connection_handle = $ff
+            # start searching through service groups (UUID = 0x2800) to find GPIO remote service
+            call attclient_read_by_group_type(connection, $0001, $ffff, 2, "\x00\x28")
+            # update application state
+            app_state = STATE_FINDING_GPIO_SERVICE
+        end if
+	
+    end if
+end
+
+# catch group found event (during GATT service discovery)
+event attclient_group_found(connection, start_handle, end_handle, uuid_len, uuid_data)
+    # Found a service group
+	if app_state = STATE_FINDING_GPIO_SERVICE then
+		# Check to see if it's the GPIO remote service
+		# Searched UUID is defined in the PRU GATT as 47f1de41-c535-414f-a747-1184246636c6
+		if uuid_len = 16 && memcmp(uuid_data(0), gpio_service(0), 16) then
+			# found it! save the handle range
+			att_handlesearch_start = start_handle
+			att_handlesearch_end = end_handle
+		end if
+	end if
+	
+	if app_state = STATE_FINDING_WPT_SERVICE then
+		# Check to see if it's the WPT service
+		# Searched UUID is defined in the PRU GATT as FFFE
+		if uuid_len = 2 && memcmp(uuid_data(0), wpt_service_uuid(0), 2) then
+			# found it! save the handle range
+			att_handlesearch_start = start_handle
+			att_handlesearch_end = end_handle
+		end if
+	end if
+end
+
+event attclient_find_information_found(connection, chrhandle, uuid_len, uuid_data)
+    # Found a descriptor, so store it 
+	if uuid_len = 16 && memcmp(uuid_data(0), gpio_levels(0), 16) then
+        # found the GPIO control attribute, so save the handle
+        att_handle_gpio_control = chrhandle
+	end if
+	
+	if uuid_len = 2 && memcmp(uuid_data(0),gpio_pwd(0),2) then
+		# found pwd password handle attribute, so save the handle
+		att_handle_pwd = chrhandle	
+	end if
+	if uuid_len = 16 && memcmp(uuid_data(0), wpt_pru_static_uuid(0), 16) then
+        # found the PRU static characteristic, so save the handle
+		att_handle_pru_static = chrhandle
+	end if
+	
+	if uuid_len = 16 && memcmp(uuid_data(0), wpt_pru_dyn_uuid(0), 16) then
+		call write_to_display("\x01",13,"Found Dynamic")
+        # found the PRU dynamic characteristic, so save the handle
+		att_handle_pru_dyn = chrhandle
+	end if
+end
+
+# catch procedure completed event (during GATT discovery and upon write acknowledgement)
+event attclient_procedure_completed(connection, result, chrhandle)
+
+	break_event = 0
+					
+    if app_state = STATE_FINDING_GPIO_SERVICE && break_event = 0 then
+		break_event = 1
+        # just finished scanning for services
+        if att_handlesearch_start > 0 then
+            call attclient_find_information(0, att_handlesearch_start, att_handlesearch_end)
+			# update application state
+            app_state = STATE_FINDING_GPIO_ATTRIBUTE
+        end if 
+    end if
+	
+    if app_state = STATE_FINDING_GPIO_ATTRIBUTE && break_event = 0  then
+		break_event = 1
+        # just finished scanning for attributes_read
+        if att_handle_gpio_control > 0 && att_handle_pwd > 0 then
+			# update application state
+			app_state = STATE_FINDING_WPT_SERVICE
+			call attclient_read_by_group_type(connection, $0001, $ffff, 2, "\x00\x28")
+        end if
+	end if
+	
+	if app_state = STATE_FINDING_WPT_SERVICE && break_event = 0  then
+		break_event = 1
+		 if att_handlesearch_start > 0 then
+            call attclient_find_information(0, att_handlesearch_start, att_handlesearch_end)
+			# update application state
+			app_state = STATE_FINDING_WPT_ATTRIBUTE
+        end if 
+	end if
+	
+	if app_state = STATE_FINDING_WPT_ATTRIBUTE && break_event = 0  then
+		break_event = 1
+		if att_handle_pru_static > 0 && att_handle_pru_dyn > 0 then
+			app_state = STATE_CONTROL_READY
+			attached_pru = attached_pru + 1
+			call attclient_read_by_handle(conn,att_handle_pru_static)
+			
+		end if
+	end if
+end
+
+# catch disconnection event
+event connection_disconnected(handle, result)
+    # restart discovery
+	call write_to_display("\x01",12,"Disconnected")
+    app_state = STATE_SCANNING
+    call gap_discover(gap_discover_generic)
+end
+
+# catch GPIO interrupts to pass on logic states to the slave
+event hardware_io_port_status(timestamp, port, irq, state)
+    if app_state = STATE_CONTROL_READY then
+		if irq = $1 then
+			call write_to_display("\x01",13,"IO-port state")
+			call write_to_display("\xC0",12,"First button")
+			call attclient_read_by_handle(conn,c_device_name)
+		end if
+		if irq = $80 then
+			call write_to_display("\x01",13,"IO-port state")
+			call write_to_display("\xC0",13,"Third button")
+			call attclient_read_by_handle(conn,c_appearance)
+		end if
+		if irq = $2 then
+			 # start searching through service groups (UUID = 0x2800) to find wpt service
+			if att_handle_pru_static > 0 then
+				call write_to_display("\x01",13,"IO-port state")
+				call write_to_display("\xC0",13,"PRU button")
+				call attclient_read_by_handle(conn,att_handle_pru_dyn)
+			else
+				call write_to_display("\x01",13,"IO-port state")
+				call write_to_display("\xC0",13,"Second button")
+			end if
+		end if
+		# connected, so write new GPIO port bitmask value to remote device
+		call attclient_attribute_write(0, att_handle_pwd,4,gpio_password(0:4))
+		call attclient_attribute_write(0, att_handle_gpio_control, 1, 1)
+    end if
+	#call connection_disconnect(conn)
+end
+
+
+event attclient_attribute_value(connection, atthandle, type, value_len, value_data)
+	
+	
+	if atthandle = att_handle_pru_dyn then
+		
+		call dyn_to_ascii(1,value_len,value_data(0:value_len))
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 21, "\r\n==== Dynamic ====\r\n")
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 16, "\r\nValue in hex\r\n")
+		
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, (value_len*2), temp_ascii_array(0:(value_len*2)))
+		
+		if memcmp(dyn_raw(0),value_data(0),20) then
+			call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+			call system_endpoint_tx(system_endpoint_uart1, 14, "\r\nNo change!\r\n")
+		else
+			call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+			call system_endpoint_tx(system_endpoint_uart1, 12, "\r\nChanged!\r\n")
+		end if
+			
+		memcpy(dyn_raw(0),value_data(0),20)
+		
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 2, "\r\n")
+	
+	
+		call update_dynamic_buffer(attached_pru,value_data(0:value_len))
+		call send_dynamic_buffer()
+	end if
+	
+	if atthandle = att_handle_pru_static then
+		
+		call dyn_to_ascii(1,value_len,value_data(0:value_len))
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 20, "\r\n==== Static ====\r\n")
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 16, "\r\nValue in hex\r\n")
+		
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, (value_len*2), temp_ascii_array(0:(value_len*2)))
+		
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 2, "\r\n")
+		
+		call hardware_set_soft_timer(32768*2,0,0)
+	
+	
+		call update_dynamic_buffer(attached_pru,value_data(0:value_len))
+		call send_dynamic_buffer()
+	end if
+	
+end
+
+event system_endpoint_watermark_rx(endpoint, size)
+    if endpoint = system_endpoint_uart1 then
+        in_len = size
+        # disable RX watermark on UART1       
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 0, $ff)
+		
+        # read available data from UART1
+        if in_len > 20 then
+            in_len = 20 # don't read more than we have space available for (BLE packet max size : 20 byte)
+        end if
+		
+        call system_endpoint_rx(system_endpoint_uart1, in_len)(result_rx, in_len, in(0:in_len))
+		
+        # set RX watermark on UART1
+        call system_endpoint_set_watermarks(system_endpoint_uart1, 1, $ff)
+    end if
+end
+
+event hardware_soft_timer(handle)
+	if app_state = STATE_CONTROL_READY then
+		call attclient_read_by_handle(conn,att_handle_pru_dyn)
+	end if
+end
+

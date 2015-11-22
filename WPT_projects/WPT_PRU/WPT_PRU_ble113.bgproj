@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<project>
+    <gatt in="pru_gatt.xml" />
+    <hardware in="pru_hardware.xml" />
+    <script in="pru_ble113.bgs" />
+	<config in="pru_config.xml" />
+    <device type="ble113" memory="256"/>
+    <image out="pru_hex_ble113.hex" />
+</project>

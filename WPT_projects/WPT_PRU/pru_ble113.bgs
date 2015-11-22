@@ -1,0 +1,177 @@
+#################################
+#	Wireless Power Transfer		#
+#		PTU project				#
+#	author:Szucs Mark Agoston	#
+#################################
+#	Start of PTU script		#	
+#############################
+
+
+#################################
+#	DECLARATION of PRU states	#
+#################################
+const STATE_STANDBY = 0			
+const STATE_CONNECTING = 1
+const STATE_CONNECTION_VERIFIED = 2
+
+dim app_state
+
+const PIN_SELECT_MASK = $83 # 0b11100000 = Px_4, Px_5, Px_6 are outputs
+const STANDBY_MASK = $40 #0b01000000, P0_6 (Standby LED) select
+const ACTIVATED_PIN_MASK = $60 #0b01100000, P0_6 & P0_5 (STDBY LED + ACTIVATED LED) select
+
+
+dim dynamic_value(20) # dynamic_buffer for simulation
+dim buffer_change
+dim passwd(4) # password buffer
+dim hold_time # relay holding time in seconds
+dim disp_cntr
+dim temp_ascii_array(40)
+dim hex_cntr
+dim byte_cntr
+dim even_cntr
+dim change_cntr
+
+procedure change_dynamic()
+	dynamic_value(buffer_change:1) = dynamic_value(buffer_change:1) + 1
+	buffer_change = buffer_change + 1
+	if buffer_change = 20 then
+		buffer_change = 0
+	end if
+end 
+
+#procedure dyn_to_ascii (bit_sequence,array_length,hex_array())
+#	byte_cntr = 0
+#	hex_cntr = 0
+#	even_cntr = 0
+#	
+#	if bit_sequence = 1 then
+#		while hex_cntr < (array_length * 2)
+#			if even_cntr = 0 then
+#				temp_ascii_array(hex_cntr:1) = (hex_array(byte_cntr:1)/$10) + 48 + ((hex_array(byte_cntr:1)/$10)/10*7)
+#				even_cntr = even_cntr + 1
+#			else
+#				temp_ascii_array(hex_cntr:1) = (hex_array(byte_cntr:1)&$f) + 48 + ((hex_array(byte_cntr:1)&$f )/10*7)
+#				even_cntr = 0
+#				byte_cntr = byte_cntr + 1
+#			end if
+#			hex_cntr = hex_cntr + 1
+#		end while
+#	else
+#		byte_cntr = array_length - 1
+#		while hex_cntr < (array_length * 2)
+#			if even_cntr = 0 then
+#				temp_ascii_array(hex_cntr:1) = (hex_array(byte_cntr:1)/$10) + 48 + ((hex_array(byte_cntr:1)/$10)/10*7)
+#				even_cntr = even_cntr + 1
+#			else
+#				temp_ascii_array(hex_cntr:1) = (hex_array(byte_cntr:1)&$f) + 48 + ((hex_array(byte_cntr:1)&$f )/10*7)
+#				even_cntr = 0
+#				byte_cntr = byte_cntr - 1
+#			end if
+#			hex_cntr = hex_cntr + 1
+#		end while
+#	end if
+#		
+#end	
+#
+#procedure write_to_display(pos,data_len, data())
+#	call hardware_io_port_write(1,$2,$1)
+#	#move cursor to position "pos"
+#	call hardware_spi_transfer(0,1,pos)
+#	
+#	#call hardware_io_port_config_direction(1, $02)
+#	#call hardware_io_port_write(1, $02, $00) # Activated P1_1 LED
+#	#display to data mode
+#	call hardware_io_port_write(1,$2,$3)
+#	disp_cntr = 0
+#	while disp_cntr < data_len	
+#		call hardware_spi_transfer(0,1,data(disp_cntr:1))
+#		disp_cntr = disp_cntr + 1
+#	end while
+#end
+
+
+
+event system_boot(major, minor, patch, build, ll_version, protocol_version, hw)
+    
+	app_state = STATE_STANDBY
+	buffer_change = 0
+	change_cntr = 0
+	# set desired Port 0 pins to output/low mode
+	# scall hardware_io_port_config_pull(1, $00, 1) #pull up to 1 all PORT_1 ports 
+    # scall hardware_io_port_config_direction(0, PIN_SELECT_MASK)
+	# scall hardware_io_port_config_direction(1, $FE)
+	
+	# scall hardware_io_port_irq_enable(1, $01)
+    # scall hardware_io_port_irq_direction(1, 0)
+    #call hardware_io_port_write(0, STANDBY_MASK, $ff)
+	#call hardware_io_port_write(1, $20, $00) # Deactivate LED
+	
+	passwd(0:4) = $FAEDFAED #password by default
+	dynamic_value(16:4) = $11115467
+	dynamic_value(12:4) = $22AF88EC
+	dynamic_value(8:4) = $8DC21234
+	dynamic_value(4:4) = $56789D55
+	dynamic_value(0:4) = $55145682
+	call attributes_write(c_pru_dynamic, 0, 20, dynamic_value(0:20))
+	#call dyn_to_ascii(0,20,dynamic_value(0:20))
+	#call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+	#call system_endpoint_tx(system_endpoint_uart1, 40, temp_ascii_array(0:40))
+    # set advertisement interval to 200-300ms
+    call gap_set_adv_parameters(320, 480, 7)
+	
+    # put module into discoverable/connectable mode
+    call gap_set_mode(gap_general_discoverable, gap_undirected_connectable)
+	call hardware_set_soft_timer(32768*4,0,0)
+	
+end
+
+# catch disconnection event
+event connection_disconnected(handle, result)
+    # put module back into discoverable/connectable mode
+	call gap_set_mode(gap_general_discoverable, gap_undirected_connectable)
+end
+
+# catch remote write of characteristic value
+event attributes_value(connection, reason, handle, offset, value_len, value_data)
+	if handle = pwd && value_data(0:4) = passwd(0:4) #password is EDFAEDFA in hex
+		#password accepted
+		call hardware_set_soft_timer(32768*hold_time,2,1) #for the duration of hold time, the IO ports are set
+	else
+		call connection_disconnect(connection)
+		#not allowed access
+	end if
+end
+
+event hardware_io_port_status(timestamp, port, irq, state)
+	# scall hardware_io_port_config_direction(1, $20)
+	
+end
+
+
+#when output timer is finished
+event hardware_soft_timer(handle)
+	if handle = 2
+		#call hardware_io_port_write(1, PIN_SELECT_MASK, $00)
+		app_state = STATE_CONNECTION_VERIFIED
+		call hardware_set_soft_timer(32768*4,0,0)
+	end if
+	if handle = 0
+		if change_cntr = 0 then
+			call gap_set_mode(gap_non_discoverable, gap_non_connectable)
+			call change_dynamic()
+			#call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+			#call system_endpoint_tx(system_endpoint_uart1, 9, "\r\nchange\r\n")
+			#call dyn_to_ascii(0,20,dynamic_value(0:20))
+			#call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+			#call system_endpoint_tx(system_endpoint_uart1, 40, temp_ascii_array(0:40))
+			# scall hardware_io_port_write(0, ACTIVATED_PIN_MASK, $ff) #blink LED-s
+			call attributes_write(c_pru_dynamic, 0, 20, dynamic_value(0:20))
+			change_cntr = 1
+		else
+			#call gap_set_adv_parameters(320, 480, 7)
+			call gap_set_mode(gap_general_discoverable, gap_undirected_connectable)
+			change_cntr = 0
+		end if
+	end if
+end
