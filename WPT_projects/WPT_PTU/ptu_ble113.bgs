@@ -21,6 +21,7 @@ const STATE_CONTROL_READY = 5
 const STATE_FINDING_WPT_SERVICE = 6
 const STATE_FINDING_WPT_ATTRIBUTE = 7
 const STATE_READ_STAT = 8
+const MAX_CONNECTIONS = 2
 
 #################################################
 #	DECLARATION of strings used by simulation	#
@@ -76,17 +77,23 @@ dim stat_delta_r1(16)
 
 dim att_handlesearch_start          # GPIO remote GATT service definition range handle start
 dim att_handlesearch_end            # GPIO remote GATT service definition range handle end
-dim att_handle_gpio_control         # local var for discovering/storing remote handle GPIO_CONTROL
-dim att_handle_pwd					# local var for discovering/storing remote handle PWD
-dim att_handle_pru_static			# local var for discovering/storing remote handle Static PRU 
-dim att_handle_pru_dyn				# local var for discovering/storing remote handle Dynamic PRU 
+dim att_handle_gpio_control(8)         # local var for discovering/storing remote handle GPIO_CONTROL
+dim att_handle_pwd(8)					# local var for discovering/storing remote handle PWD
+dim att_handle_pru_static(8)			# local var for discovering/storing remote handle Static PRU 
+dim att_handle_pru_dyn(8)				# local var for discovering/storing remote handle Dynamic PRU 
+
+#########################################
+#	DECLARATION of connection handlers	#
+#########################################
+dim connections(8)
+dim attached_pru
+dim address_pru(48)
+dim temp_sender(6)
 
 
 #########################################
 #	DECLARATION of auxilliary variables	#
 #########################################
-
-dim attached_pru
 dim gpio_password(4)						# Password container
 dim app_state                       # keep track of application state // current state 
 dim pending_connection_handle       # handle for pending connection attempt
@@ -97,7 +104,6 @@ dim j
 dim k
 dim ret_result
 dim error_code(4)
-dim conn
 dim temp_ascii_array(40)		#Maximum length of ascii conversion
 dim in(10)
 dim in_len
@@ -108,7 +114,10 @@ dim byte_cntr
 dim even_cntr
 dim display_position
 dim array_place
+dim conn_cntr
 dim pru_cntr
+dim read_cntr
+dim conn_found
 dim two_byte_place
 dim break_event
 
@@ -116,6 +125,7 @@ dim break_event
 #	Procedure declarations	#
 #############################
 
+#INIT procedure
 procedure default_variable_declaration()
 	# initialize all status/tracking vars
     app_state = STATE_STANDBY
@@ -123,10 +133,12 @@ procedure default_variable_declaration()
 	pending_connection_handle = $ff	#$ means this has hexa value
     att_handlesearch_start = 0
     att_handlesearch_end = 0
-    att_handle_gpio_control = 0
-	att_handle_pwd = 0	#handle for pwd characteristic
-	att_handle_pru_static = 0
-	
+    att_handle_gpio_control(0:1) = 0
+	att_handle_gpio_control(1:1) = 0
+	att_handle_pwd(0:1) = 0	#handle for pwd characteristic
+	att_handle_pwd(1:1) = 0
+	att_handle_pru_static(0:1) = 0
+	att_handle_pru_static(1:1) = 0
 	gpio_password(0:4)=$FAEDFAED #default password
 	
 	# NOTE: LITTLE-ENDIAN BYTE ORDER
@@ -146,13 +158,11 @@ procedure default_variable_declaration()
 	
 end
 
+#Writing to LCD display procedure
 procedure write_to_display(pos,data_len, data())
 	call hardware_io_port_write(1,$2,$1)
 	#move cursor to position "pos"
 	call hardware_spi_transfer(0,1,pos)
-	
-	#call hardware_io_port_config_direction(1, $02)
-	#call hardware_io_port_write(1, $02, $00) # Activated P1_1 LED
 	#display to data mode
 	call hardware_io_port_write(1,$2,$3)
 	disp_cntr = 0
@@ -162,6 +172,7 @@ procedure write_to_display(pos,data_len, data())
 	end while
 end
 
+#Hex to ascii conversion
 procedure dyn_to_ascii (bit_sequence,array_length,hex_array())
 	byte_cntr = 0
 	hex_cntr = 0
@@ -196,6 +207,7 @@ procedure dyn_to_ascii (bit_sequence,array_length,hex_array())
 		
 end	
 
+#Dynamic buffer update
 procedure update_dynamic_buffer(number_of_pru,dyn_array())
 
 	array_place = number_of_pru - 1
@@ -211,6 +223,7 @@ procedure update_dynamic_buffer(number_of_pru,dyn_array())
 	dyn_alert(array_place:1) = dyn_array(16:1)
 end
 
+#Static buffer update
 procedure update_static_buffer(number_of_pru,dyn_array())
 
 	array_place = number_of_pru - 1
@@ -228,6 +241,7 @@ procedure update_static_buffer(number_of_pru,dyn_array())
 	
 end
 
+#Send content of dynamic buffer to compter via UART
 procedure send_dynamic_buffer()
 	
 	pru_cntr = 0
@@ -297,6 +311,24 @@ procedure send_dynamic_buffer()
 
 end
 
+#Delete connection
+procedure delete_connection(no_del_conn)
+	while no_del_conn < attached_pru
+		
+		
+		dyn_voltage_rect(no_del_conn:2) = dyn_voltage_rect(1:2)		
+		dyn_current_rect(no_del_conn:2) = dyn_current_rect(3:2)
+		dyn_voltage_out(no_del_conn:2) = dyn_voltage_out(5:2)
+		dyn_current_out(no_del_conn:2) = dyn_current_out(7:2)
+		dyn_temperature(no_del_conn:1) = dyn_temperature(9:1)
+		dyn_voltage_rect_min(no_del_conn:2) = dyn_voltage_rect_min(10:2)
+		dyn_voltage_rect_set(no_del_conn:2) = dyn_voltage_rect_set(12:2)
+		dyn_voltage_rect_high(no_del_conn:2) = dyn_voltage_rect_high(14:2)
+		dyn_alert(no_del_conn:1) = dyn_alert(16:1)
+	end while
+end
+
+
 event system_boot(major, minor, patch, build, ll_version, protocol_version, hw)
    
 	call default_variable_declaration()
@@ -326,12 +358,13 @@ event system_boot(major, minor, patch, build, ll_version, protocol_version, hw)
     call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
     call system_endpoint_tx(system_endpoint_uart1, 9, "\r\nREADY\r\n")
 	
-
     call gap_discover(gap_discover_generic)
 end
 
 # catch scan response event while scanning
 event gap_scan_response(rssi, packet_type, sender, address_type, bond, data_len, data_data)
+	call system_endpoint_tx(system_endpoint_uart1, 18, "\r\n====connection\r\n")
+	call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
     # only check for main ad packets (packet_type = 0)
     if packet_type = 0 then
         # advertisement packet found during scan, so check for demo status/control service
@@ -348,8 +381,10 @@ event gap_scan_response(rssi, packet_type, sender, address_type, bond, data_len,
                         # found GPIO remote service, so connect (stops scanning automatically)
 						#call hardware_set_soft_timer(32768*2, 0, 1)
                         call gap_connect_direct(sender(0:6), address_type, $20, $30, 100, 0)(ret_result, k)
+						
 						call write_to_display("\x01",17,"Connection found!")
 						#call system_address_get()(mac_addr(0:6))
+						memcpy(temp_sender(0),sender(0),6)
 						call dyn_to_ascii(0,6,sender(0:6))
 						call write_to_display("\xC0",12,temp_ascii_array(0:11))
 						call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
@@ -377,11 +412,18 @@ end
 # catch connection update event
 event connection_status(connection, flags, address, address_type, conn_interval, timeout, latency, bonding)
     # check for "new connection established" update
-	conn = connection	#conn =  pointer to connection
     if (flags & $05) = $05 then
 		# make sure this is the first "connection_update" event
         # (may be triggered again for other updates, encryption, etc.)
         if app_state = STATE_CONNECTING then
+			memcpy(temp_sender(0),address(0),6)
+			call dyn_to_ascii(0,6,address(0:6))
+			#call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+			#call system_endpoint_tx(system_endpoint_uart1, 12, temp_ascii_array(0:11))					
+			#call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+			#call system_endpoint_tx(system_endpoint_uart1, 2, "\r\n")
+			#call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+			#call system_endpoint_tx(system_endpoint_uart1, 1, connection + 48)
             # cancel connection timeout timer
             call hardware_set_soft_timer(0, 0, 1)
             pending_connection_handle = $ff
@@ -396,11 +438,15 @@ end
 
 # catch group found event (during GATT service discovery)
 event attclient_group_found(connection, start_handle, end_handle, uuid_len, uuid_data)
-    # Found a service group
+    # Found a service group					
 	if app_state = STATE_FINDING_GPIO_SERVICE then
+		#call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		#call system_endpoint_tx(system_endpoint_uart1, 7, "\r\nGPIO:")
 		# Check to see if it's the GPIO remote service
 		# Searched UUID is defined in the PRU GATT as 47f1de41-c535-414f-a747-1184246636c6
 		if uuid_len = 16 && memcmp(uuid_data(0), gpio_service(0), 16) then
+			#call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+			#call system_endpoint_tx(system_endpoint_uart1, 1, connection + 48)
 			# found it! save the handle range
 			att_handlesearch_start = start_handle
 			att_handlesearch_end = end_handle
@@ -410,7 +456,11 @@ event attclient_group_found(connection, start_handle, end_handle, uuid_len, uuid
 	if app_state = STATE_FINDING_WPT_SERVICE then
 		# Check to see if it's the WPT service
 		# Searched UUID is defined in the PRU GATT as FFFE
+		#call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		#call system_endpoint_tx(system_endpoint_uart1, 7, "\r\nWPT:")
 		if uuid_len = 2 && memcmp(uuid_data(0), wpt_service_uuid(0), 2) then
+			#call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+			#call system_endpoint_tx(system_endpoint_uart1, 1, connection + 48)
 			# found it! save the handle range
 			att_handlesearch_start = start_handle
 			att_handlesearch_end = end_handle
@@ -419,38 +469,60 @@ event attclient_group_found(connection, start_handle, end_handle, uuid_len, uuid
 end
 
 event attclient_find_information_found(connection, chrhandle, uuid_len, uuid_data)
-    # Found a descriptor, so store it 
+   	conn_cntr = 0
+	while conn_cntr < attached_pru - 1
+		conn_cntr = conn_cntr + 1
+	end while
+	# Found a descriptor, so store it 
 	if uuid_len = 16 && memcmp(uuid_data(0), gpio_levels(0), 16) then
         # found the GPIO control attribute, so save the handle
-        att_handle_gpio_control = chrhandle
+        att_handle_gpio_control(connection:1) = chrhandle
+		#call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		#call system_endpoint_tx(system_endpoint_uart1, 11, "\r\nGPIO_con:")
+		#call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		#call system_endpoint_tx(system_endpoint_uart1, 2, connection+48)
 	end if
 	
 	if uuid_len = 2 && memcmp(uuid_data(0),gpio_pwd(0),2) then
 		# found pwd password handle attribute, so save the handle
-		att_handle_pwd = chrhandle	
+		att_handle_pwd(connection:1) = chrhandle	
+		#call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		#call system_endpoint_tx(system_endpoint_uart1, 11, "\r\nGPIO_pas:")
 	end if
 	if uuid_len = 16 && memcmp(uuid_data(0), wpt_pru_static_uuid(0), 16) then
         # found the PRU static characteristic, so save the handle
-		att_handle_pru_static = chrhandle
+		att_handle_pru_static(connection:1) = chrhandle
+		#call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		#call system_endpoint_tx(system_endpoint_uart1, 11, "\r\nWPT_stat:")
+		#call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		#call system_endpoint_tx(system_endpoint_uart1, 2, connection+48)
 	end if
 	
 	if uuid_len = 16 && memcmp(uuid_data(0), wpt_pru_dyn_uuid(0), 16) then
 		call write_to_display("\x01",13,"Found Dynamic")
         # found the PRU dynamic characteristic, so save the handle
-		att_handle_pru_dyn = chrhandle
+		att_handle_pru_dyn(connection:1) = chrhandle
+		#call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		#call system_endpoint_tx(system_endpoint_uart1, 11, "\r\nWPT_dyna:")
+		#call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		#call system_endpoint_tx(system_endpoint_uart1, 2, connection+48)
 	end if
 end
 
 # catch procedure completed event (during GATT discovery and upon write acknowledgement)
 event attclient_procedure_completed(connection, result, chrhandle)
 
+	conn_cntr = 0
+	while conn_cntr < attached_pru - 1
+		conn_cntr = conn_cntr + 1
+	end while
 	break_event = 0
 					
     if app_state = STATE_FINDING_GPIO_SERVICE && break_event = 0 then
 		break_event = 1
         # just finished scanning for services
         if att_handlesearch_start > 0 then
-            call attclient_find_information(0, att_handlesearch_start, att_handlesearch_end)
+            call attclient_find_information(connection, att_handlesearch_start, att_handlesearch_end)
 			# update application state
             app_state = STATE_FINDING_GPIO_ATTRIBUTE
         end if 
@@ -459,7 +531,7 @@ event attclient_procedure_completed(connection, result, chrhandle)
     if app_state = STATE_FINDING_GPIO_ATTRIBUTE && break_event = 0  then
 		break_event = 1
         # just finished scanning for attributes_read
-        if att_handle_gpio_control > 0 && att_handle_pwd > 0 then
+        if att_handle_gpio_control(connection:1) > 0 && att_handle_pwd(connection:1) > 0 then
 			# update application state
 			app_state = STATE_FINDING_WPT_SERVICE
 			call attclient_read_by_group_type(connection, $0001, $ffff, 2, "\x00\x28")
@@ -469,7 +541,7 @@ event attclient_procedure_completed(connection, result, chrhandle)
 	if app_state = STATE_FINDING_WPT_SERVICE && break_event = 0  then
 		break_event = 1
 		 if att_handlesearch_start > 0 then
-            call attclient_find_information(0, att_handlesearch_start, att_handlesearch_end)
+            call attclient_find_information(connection, att_handlesearch_start, att_handlesearch_end)
 			# update application state
 			app_state = STATE_FINDING_WPT_ATTRIBUTE
         end if 
@@ -477,50 +549,79 @@ event attclient_procedure_completed(connection, result, chrhandle)
 	
 	if app_state = STATE_FINDING_WPT_ATTRIBUTE && break_event = 0  then
 		break_event = 1
-		if att_handle_pru_static > 0 && att_handle_pru_dyn > 0 then
-			app_state = STATE_CONTROL_READY
+		if att_handle_pru_static(connection:1) > 0 && att_handle_pru_dyn(connection:1) > 0 then
 			attached_pru = attached_pru + 1
-			call attclient_read_by_handle(conn,att_handle_pru_static)
-			
+			call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+			call system_endpoint_tx(system_endpoint_uart1, 11, "\r\nAttached: ")
+			call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+			call system_endpoint_tx(system_endpoint_uart1, 2, connection+48)
+			call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+			call system_endpoint_tx(system_endpoint_uart1, 2, attached_pru+48)
+			call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+			call system_endpoint_tx(system_endpoint_uart1, 2, "\r\n")
+			app_state = STATE_CONTROL_READY
+			connections(connection:1) = 1
+			memcpy(address_pru(((attached_pru-1)*6)),temp_sender(0),6)
+			if attached_pru < MAX_CONNECTIONS then
+				# start discovery
+				app_state = STATE_SCANNING
+				att_handlesearch_start = 0
+				att_handlesearch_end = 0
+            call gap_discover(gap_discover_generic)
+			else
+				call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+				call system_endpoint_tx(system_endpoint_uart1, 2, connections(0:1) + 48)
+				
+				call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+				call system_endpoint_tx(system_endpoint_uart1, 2, connections(1:1) + 48)
+				call attclient_read_by_handle(0,att_handle_pru_static(0:1))
+			end if
 		end if
 	end if
 end
 
 # catch disconnection event
-event connection_disconnected(handle, result)
+event connection_disconnected(connection, result)
+	#clear all data for connection
+	#conn_cntr = 0;
+	#while conn_cntr < attached_pru - 1
+	#	conn_cntr = conn_cntr + 1
+	#end while
+	
     # restart discovery
 	call write_to_display("\x01",12,"Disconnected")
     app_state = STATE_SCANNING
     call gap_discover(gap_discover_generic)
+	
 end
 
 # catch GPIO interrupts to pass on logic states to the slave
 event hardware_io_port_status(timestamp, port, irq, state)
     if app_state = STATE_CONTROL_READY then
-		if irq = $1 then
-			call write_to_display("\x01",13,"IO-port state")
-			call write_to_display("\xC0",12,"First button")
-			call attclient_read_by_handle(conn,c_device_name)
-		end if
-		if irq = $80 then
-			call write_to_display("\x01",13,"IO-port state")
-			call write_to_display("\xC0",13,"Third button")
-			call attclient_read_by_handle(conn,c_appearance)
-		end if
-		if irq = $2 then
-			 # start searching through service groups (UUID = 0x2800) to find wpt service
-			if att_handle_pru_static > 0 then
-				call write_to_display("\x01",13,"IO-port state")
-				call write_to_display("\xC0",13,"PRU button")
-				call attclient_read_by_handle(conn,att_handle_pru_dyn)
-			else
-				call write_to_display("\x01",13,"IO-port state")
-				call write_to_display("\xC0",13,"Second button")
-			end if
-		end if
+		#if irq = $1 then
+		#	call write_to_display("\x01",13,"IO-port state")
+		#	call write_to_display("\xC0",12,"First button")
+		#	call attclient_read_by_handle(conn,c_device_name)
+		#end if
+		#if irq = $80 then
+		#	call write_to_display("\x01",13,"IO-port state")
+		#	call write_to_display("\xC0",13,"Third button")
+		#	call attclient_read_by_handle(conn,c_appearance)
+		#end if
+		#if irq = $2 then
+		#	 # start searching through service groups (UUID = 0x2800) to find wpt service
+		#	if att_handle_pru_static > 0 then
+		#		call write_to_display("\x01",13,"IO-port state")
+		#		call write_to_display("\xC0",13,"PRU button")
+		#		call attclient_read_by_handle(conn,att_handle_pru_dyn)
+		#	else
+		#		call write_to_display("\x01",13,"IO-port state")
+		#		call write_to_display("\xC0",13,"Second button")
+		#	end if
+		#end if
 		# connected, so write new GPIO port bitmask value to remote device
-		call attclient_attribute_write(0, att_handle_pwd,4,gpio_password(0:4))
-		call attclient_attribute_write(0, att_handle_gpio_control, 1, 1)
+		#call attclient_attribute_write(0, att_handle_pwd,4,gpio_password(0:4))
+		#call attclient_attribute_write(0, att_handle_gpio_control, 1, 1)
     end if
 	#call connection_disconnect(conn)
 end
@@ -528,14 +629,28 @@ end
 
 event attclient_attribute_value(connection, atthandle, type, value_len, value_data)
 	
+	conn_cntr = 0
+	read_cntr = 0
+	conn_found = connection
 	
-	if atthandle = att_handle_pru_dyn then
+	if atthandle = att_handle_pru_dyn(connection:1) then
 		
 		call dyn_to_ascii(1,value_len,value_data(0:value_len))
 		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
 		call system_endpoint_tx(system_endpoint_uart1, 21, "\r\n==== Dynamic ====\r\n")
 		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
 		call system_endpoint_tx(system_endpoint_uart1, 16, "\r\nValue in hex\r\n")
+		call dyn_to_ascii(0,6,address_pru((connection*6):6))
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 12, temp_ascii_array(0:11))					
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 2, "\r\n")
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 11, "\r\nAttached: ")
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 2, attached_pru+48)
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 2, "\r\n")
 		
 		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
 		call system_endpoint_tx(system_endpoint_uart1, (value_len*2), temp_ascii_array(0:(value_len*2)))
@@ -555,10 +670,16 @@ event attclient_attribute_value(connection, atthandle, type, value_len, value_da
 	
 	
 		call update_dynamic_buffer(attached_pru,value_data(0:value_len))
-		call send_dynamic_buffer()
+		if connection = attached_pru - 1 then
+			call hardware_set_soft_timer(32768*10,1,1)
+		else
+			read_cntr = connection + 1
+			call attclient_read_by_handle(read_cntr,att_handle_pru_dyn(read_cntr:1))
+		end if
+		#call send_dynamic_buffer()
 	end if
 	
-	if atthandle = att_handle_pru_static then
+	if atthandle = att_handle_pru_static(connection:1) then
 		
 		call dyn_to_ascii(1,value_len,value_data(0:value_len))
 		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
@@ -566,17 +687,35 @@ event attclient_attribute_value(connection, atthandle, type, value_len, value_da
 		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
 		call system_endpoint_tx(system_endpoint_uart1, 16, "\r\nValue in hex\r\n")
 		
+		call dyn_to_ascii(0,6,address_pru((connection*6):6))
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 12, temp_ascii_array(0:11))					
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 2, "\r\n")
+		
 		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
 		call system_endpoint_tx(system_endpoint_uart1, (value_len*2), temp_ascii_array(0:(value_len*2)))
 		
 		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
 		call system_endpoint_tx(system_endpoint_uart1, 2, "\r\n")
+		call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 2, connection + 48)
 		
-		call hardware_set_soft_timer(32768*2,0,0)
+		if connection = attached_pru - 1 then
+			call hardware_set_soft_timer(32768*10,1,1)
+		else
+			#call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+			#call system_endpoint_tx(system_endpoint_uart1, 11, "static else")
+			
+			read_cntr = connection + 1
+			#call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+			#call system_endpoint_tx(system_endpoint_uart1, 2, connections(1:1) + 48)	
+			call attclient_read_by_handle(read_cntr,att_handle_pru_static(read_cntr:1))
+		end if
 	
 	
-		call update_dynamic_buffer(attached_pru,value_data(0:value_len))
-		call send_dynamic_buffer()
+		#call update_dynamic_buffer(attached_pru,value_data(0:value_len))
+		#call send_dynamic_buffer()
 	end if
 	
 end
@@ -600,8 +739,20 @@ event system_endpoint_watermark_rx(endpoint, size)
 end
 
 event hardware_soft_timer(handle)
+	read_cntr = 0
+	#if handle = 0 then
+	#	call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+	#	call system_endpoint_tx(system_endpoint_uart1, 21, "\r\n==== stimer0 ====\r\n")
+	#	app_state = STATE_SCANNING
+	#	call gap_discover(gap_discover_generic)
+	#else 
+	#	call system_endpoint_set_watermarks(system_endpoint_uart1, 1, 0)
+	#	call system_endpoint_tx(system_endpoint_uart1, 21, "\r\n==== stimer1 ====\r\n")
+	#end if
+		
+	
 	if app_state = STATE_CONTROL_READY then
-		call attclient_read_by_handle(conn,att_handle_pru_dyn)
+		call attclient_read_by_handle(0,att_handle_pru_dyn(0:1))
 	end if
 end
 

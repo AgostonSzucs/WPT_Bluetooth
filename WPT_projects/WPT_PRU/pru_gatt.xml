@@ -68,11 +68,11 @@
 			<value type = 'hex'>0000546722AF88EC8DC2123456789D5555145682</value>
 		</characteristic>
 		
+		<!-- custom characteristic for PRU dynamic parameters -->
 		<characteristic uuid="6455e670-a146-11e2-9e96-0800200c9a6B" id = "c_pru_dynamic">
 			<description> PRU dynamic parameters </description>
 			<properties read="true" write="true" indicate = "true" />
 			<value type = 'hex' length = "20" />
-
 		</characteristic>
 	</service>
 		
